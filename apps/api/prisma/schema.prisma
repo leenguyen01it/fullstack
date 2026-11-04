@@ -1,0 +1,181 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// Stores a registered account that can sign in to TaskFlow.
+/// @since REQ-001
+/// @updated REQ-002
+/// @updated REQ-003
+/// @updated REQ-004
+/// @updated REQ-006
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  refreshTokens   RefreshToken[]
+  memberships     WorkspaceMember[]
+  assignedTasks   Task[]            @relation("TaskAssignee")
+  createdTasks    Task[]            @relation("TaskCreator")
+  invitationsSent Invitation[]
+
+  @@map("users")
+}
+
+/// Lists the roles a user can hold inside a workspace.
+/// @since REQ-003
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+
+  @@map("workspace_role")
+}
+
+/// Stores a workspace: the tenant that owns boards and tasks and groups its members.
+/// @since REQ-003
+/// @updated REQ-004
+/// @updated REQ-006
+model Workspace {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  members     WorkspaceMember[]
+  boards      Board[]
+  tasks       Task[]
+  invitations Invitation[]
+
+  @@map("workspaces")
+}
+
+/// Stores a user's membership in a workspace and the role they hold there.
+/// @since REQ-003
+model WorkspaceMember {
+  workspaceId String        @map("workspace_id") @db.Uuid
+  userId      String        @map("user_id") @db.Uuid
+  role        WorkspaceRole @default(MEMBER)
+  joinedAt    DateTime      @default(now()) @map("joined_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([workspaceId, userId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+/// Stores the hash of an issued refresh token; tokens issued from one login share a family.
+/// @since REQ-002
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  familyId  String    @map("family_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  rotatedAt DateTime? @map("rotated_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+/// Stores a Kanban board inside a workspace.
+/// @since REQ-004
+model Board {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  name        String
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  columns   BoardColumn[]
+
+  @@index([workspaceId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("boards")
+}
+
+/// Stores a column of a board; position is a fractional index compared with COLLATE "C".
+/// @since REQ-004
+model BoardColumn {
+  id        String   @id @default(uuid()) @db.Uuid
+  boardId   String   @map("board_id") @db.Uuid
+  name      String
+  position  String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  board Board  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  tasks Task[]
+
+  @@unique([boardId, position])
+  @@map("board_columns")
+}
+
+/// Stores a task in a board column; position is a fractional index compared with COLLATE "C",
+/// version supports optimistic locking, and reminderSentFor records the due date already reminded about.
+/// @since REQ-004
+/// @updated REQ-006
+model Task {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  columnId        String    @map("column_id") @db.Uuid
+  title           String
+  description     String?
+  position        String
+  version         Int       @default(1)
+  assigneeId      String?   @map("assignee_id") @db.Uuid
+  creatorId       String?   @map("creator_id") @db.Uuid
+  dueDate         DateTime? @map("due_date")
+  reminderSentFor DateTime? @map("reminder_sent_for")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  column    BoardColumn @relation(fields: [columnId], references: [id], onDelete: NoAction)
+  assignee  User?       @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  creator   User?       @relation("TaskCreator", fields: [creatorId], references: [id], onDelete: SetNull)
+
+  @@unique([columnId, position])
+  @@index([workspaceId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([assigneeId])
+  @@index([dueDate])
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("tasks")
+}
+
+/// Stores an invitation to join a workspace; only the SHA-256 hash of the emailed token is kept.
+/// @since REQ-006
+model Invitation {
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String        @map("workspace_id") @db.Uuid
+  email       String
+  role        WorkspaceRole
+  tokenHash   String        @unique @map("token_hash")
+  invitedById String?       @map("invited_by_id") @db.Uuid
+  expiresAt   DateTime      @map("expires_at")
+  acceptedAt  DateTime?     @map("accepted_at")
+  revokedAt   DateTime?     @map("revoked_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User?     @relation(fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, email])
+  @@map("invitations")
+}
